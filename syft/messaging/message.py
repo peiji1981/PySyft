@@ -12,7 +12,7 @@ from abc import abstractmethod
 
 import syft as sy
 from syft.workers.abstract import AbstractWorker
-from syft.serde.syft_serializable import SyftSerializable
+from syft.generic.abstract.syft_serializable import SyftSerializable
 
 from syft.execution.action import Action
 from syft.execution.computation import ComputationAction
@@ -119,7 +119,7 @@ class TensorCommandMessage(Message):
 
     @staticmethod
     def computation(name, target, args_, kwargs_, return_ids, return_value=False):
-        """ Helper function to build a TensorCommandMessage containing a ComputationAction
+        """Helper function to build a TensorCommandMessage containing a ComputationAction
         directly from the action arguments.
         """
         action = ComputationAction(name, target, args_, kwargs_, return_ids, return_value)
@@ -127,7 +127,7 @@ class TensorCommandMessage(Message):
 
     @staticmethod
     def communication(name, target, args_, kwargs_, return_ids):
-        """ Helper function to build a TensorCommandMessage containing a CommunicationAction
+        """Helper function to build a TensorCommandMessage containing a CommunicationAction
         directly from the action arguments.
         """
         action = CommunicationAction(name, target, args_, kwargs_, return_ids)
@@ -219,10 +219,10 @@ class TensorCommandMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for TensorCommandMessage.
+        Returns the protobuf schema used for TensorCommandMessage.
 
-            Returns:
-                Protobuf schema for torch.Size.
+        Returns:
+            Protobuf schema for torch.Size.
         """
         return CommandMessagePB
 
@@ -296,13 +296,13 @@ class ObjectMessage(Message):
     @staticmethod
     def unbufferize(worker, protobuf_obj):
         """
-            This method deserializes ObjectMessagePB into ObjectMessage.
+        This method deserializes ObjectMessagePB into ObjectMessage.
 
-            Args:
-                protobuf_obj (ObjectMessagePB): input serialized ObjectMessagePB.
+        Args:
+            protobuf_obj (ObjectMessagePB): input serialized ObjectMessagePB.
 
-            Returns:
-                object_msg (ObjectMessage): deserialized ObjectMessagePB.
+        Returns:
+            object_msg (ObjectMessage): deserialized ObjectMessagePB.
         """
         protobuf_obj = protobuf_obj.tensor
         object_ = sy.serde.protobuf.serde._unbufferize(worker, protobuf_obj)
@@ -313,10 +313,10 @@ class ObjectMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for ObjectMessage.
+        Returns the protobuf schema used for ObjectMessage.
 
-            Returns:
-                Protobuf schema for ObjectMessage.
+        Returns:
+            Protobuf schema for ObjectMessage.
         """
         return ObjectMessagePB
 
@@ -331,12 +331,13 @@ class ObjectRequestMessage(Message):
     # TODO: add more efficient detailer and simplifier custom for this type
     # https://github.com/OpenMined/PySyft/issues/2512
 
-    def __init__(self, obj_id, user, reason):
+    def __init__(self, obj_id, user, reason, get_copy):
         """Initialize the message."""
 
         self.object_id = obj_id
         self.user = user
         self.reason = reason
+        self.get_copy = get_copy
 
     def __str__(self):
         """Return a human readable version of this message"""
@@ -359,6 +360,7 @@ class ObjectRequestMessage(Message):
             sy.serde.msgpack.serde._simplify(worker, msg.object_id),
             sy.serde.msgpack.serde._simplify(worker, msg.user),
             sy.serde.msgpack.serde._simplify(worker, msg.reason),
+            sy.serde.msgpack.serde._simplify(worker, msg.get_copy),
         )
 
     @staticmethod
@@ -380,18 +382,19 @@ class ObjectRequestMessage(Message):
             sy.serde.msgpack.serde._detail(worker, msg_tuple[0]),
             sy.serde.msgpack.serde._detail(worker, msg_tuple[1]),
             sy.serde.msgpack.serde._detail(worker, msg_tuple[2]),
+            sy.serde.msgpack.serde._detail(worker, msg_tuple[3]),
         )
 
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a ObjectRequestMessage using ObjectRequestMessagePB.
+        This method serializes a ObjectRequestMessage using ObjectRequestMessagePB.
 
-            Args:
-                msg (ObjectRequestMessage): input ObjectRequestMessage to be serialized.
+        Args:
+            msg (ObjectRequestMessage): input ObjectRequestMessage to be serialized.
 
-            Returns:
-                proto_msg (ObjectRequestMessagePB): serialized ObjectRequestMessage.
+        Returns:
+            proto_msg (ObjectRequestMessagePB): serialized ObjectRequestMessage.
         """
         proto_msg = ObjectRequestMessagePB()
         sy.serde.protobuf.proto.set_protobuf_id(proto_msg.object_id, msg.object_id)
@@ -401,25 +404,27 @@ class ObjectRequestMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_msg):
         """
-            This method deserializes ObjectRequestMessagePB into ObjectRequestMessage.
+        This method deserializes ObjectRequestMessagePB into ObjectRequestMessage.
 
-            Args:
-                protobuf_msg (ObjectRequestMessagePB): input serialized ObjectRequestMessagePB.
+        Args:
+            protobuf_msg (ObjectRequestMessagePB): input serialized ObjectRequestMessagePB.
 
-            Returns:
-               ObjectRequestMessage: deserialized ObjectRequestMessagePB.
+        Returns:
+           ObjectRequestMessage: deserialized ObjectRequestMessagePB.
         """
         obj_id = sy.serde.protobuf.proto.get_protobuf_id(proto_msg.object_id)
         # add worker support when it will be available
-        return ObjectRequestMessage(obj_id=obj_id, user=None, reason=proto_msg.reason)
+        return ObjectRequestMessage(
+            obj_id=obj_id, user=None, reason=proto_msg.reason, get_copy=False
+        )
 
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for ObjectRequestMessage.
+        Returns the protobuf schema used for ObjectRequestMessage.
 
-            Returns:
-                Protobuf schema for ObjectRequestMessage.
+        Returns:
+            Protobuf schema for ObjectRequestMessage.
         """
         return ObjectRequestMessagePB
 
@@ -478,13 +483,13 @@ class IsNoneMessage(Message):
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a IsNoneMessage using IsNoneMessagePB.
+        This method serializes a IsNoneMessage using IsNoneMessagePB.
 
-            Args:
-                msg (IsNoneMessage): input IsNoneMessage to be serialized.
+        Args:
+            msg (IsNoneMessage): input IsNoneMessage to be serialized.
 
-            Returns:
-                protobuf_script (IsNoneMessagePB): serialized IsNoneMessage.
+        Returns:
+            protobuf_script (IsNoneMessagePB): serialized IsNoneMessage.
         """
         proto_msg = IsNoneMessagePB()
         sy.serde.protobuf.proto.set_protobuf_id(proto_msg.object_id, msg.object_id)
@@ -493,13 +498,13 @@ class IsNoneMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_msg):
         """
-            This method deserializes IsNoneMessagePB into IsNoneMessage.
+        This method deserializes IsNoneMessagePB into IsNoneMessage.
 
-            Args:
-                protobuf_msg (IsNoneMessagePB): input serialized IsNoneMessagePB.
+        Args:
+            protobuf_msg (IsNoneMessagePB): input serialized IsNoneMessagePB.
 
-            Returns:
-                IsNoneMessage: deserialized IsNoneMessagePB.
+        Returns:
+            IsNoneMessage: deserialized IsNoneMessagePB.
         """
         obj_id = sy.serde.protobuf.proto.get_protobuf_id(proto_msg.object_id)
         return IsNoneMessage(obj_id=obj_id)
@@ -507,10 +512,10 @@ class IsNoneMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for IsNoneMessage.
+        Returns the protobuf schema used for IsNoneMessage.
 
-            Returns:
-                Protobuf schema for ObjectRequestMessage.
+        Returns:
+            Protobuf schema for ObjectRequestMessage.
         """
         return IsNoneMessagePB
 
@@ -572,13 +577,13 @@ class GetShapeMessage(Message):
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a GetShapeMessage using GetShapeMessagePB.
+        This method serializes a GetShapeMessage using GetShapeMessagePB.
 
-            Args:
-                msg (GetShapeMessage): input GetShapeMessage to be serialized.
+        Args:
+            msg (GetShapeMessage): input GetShapeMessage to be serialized.
 
-            Returns:
-                proto_msg (GetShapeMessagePB): serialized GetShapeMessage.
+        Returns:
+            proto_msg (GetShapeMessagePB): serialized GetShapeMessage.
         """
         proto_msg = GetShapeMessagePB()
         sy.serde.protobuf.proto.set_protobuf_id(proto_msg.object_id, msg.tensor_id)
@@ -587,13 +592,13 @@ class GetShapeMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_obj):
         """
-            This method deserializes GetShapeMessagePB into GetShapeMessage.
+        This method deserializes GetShapeMessagePB into GetShapeMessage.
 
-            Args:
-                protobuf_obj (GetShapeMessage): input serialized GetShapeMessagePB.
+        Args:
+            protobuf_obj (GetShapeMessage): input serialized GetShapeMessagePB.
 
-            Returns:
-                GetShapeMessage: deserialized GetShapeMessagePB.
+        Returns:
+            GetShapeMessage: deserialized GetShapeMessagePB.
         """
         tensor_id = sy.serde.protobuf.proto.get_protobuf_id(proto_obj.object_id)
         return GetShapeMessage(tensor_id=tensor_id)
@@ -601,10 +606,10 @@ class GetShapeMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for GetShapeMessage.
+        Returns the protobuf schema used for GetShapeMessage.
 
-            Returns:
-                Protobuf schema for GetShapeMessage.
+        Returns:
+            Protobuf schema for GetShapeMessage.
         """
         return GetShapeMessagePB
 
@@ -620,14 +625,14 @@ class ForceObjectDeleteMessage(Message):
     # TODO: add more efficient detailer and simplifier custom for this type
     # https://github.com/OpenMined/PySyft/issues/2512
 
-    def __init__(self, obj_id):
+    def __init__(self, obj_ids):
         """Initialize the message."""
 
-        self.object_id = obj_id
+        self.object_ids = obj_ids
 
     def __str__(self):
         """Return a human readable version of this message"""
-        return f"({type(self).__name__} {self.object_id})"
+        return f"({type(self).__name__} {self.object_ids})"
 
     @staticmethod
     def simplify(worker: AbstractWorker, msg: "ForceObjectDeleteMessage") -> tuple:
@@ -642,7 +647,7 @@ class ForceObjectDeleteMessage(Message):
         Examples:
             data = simplify(msg)
         """
-        return (sy.serde.msgpack.serde._simplify(worker, msg.object_id),)
+        return sy.serde.msgpack.serde._simplify(worker, msg.object_ids)
 
     @staticmethod
     def detail(worker: AbstractWorker, msg_tuple: tuple) -> "ForceObjectDeleteMessage":
@@ -659,44 +664,53 @@ class ForceObjectDeleteMessage(Message):
         Examples:
             message = detail(sy.local_worker, msg_tuple)
         """
-        return ForceObjectDeleteMessage(sy.serde.msgpack.serde._detail(worker, msg_tuple[0]))
+        return ForceObjectDeleteMessage(sy.serde.msgpack.serde._detail(worker, msg_tuple))
 
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a ForceObjectDeleteMessage using ForceObjectDeleteMessagePB.
+        This method serializes a ForceObjectDeleteMessage using ForceObjectDeleteMessagePB.
 
-            Args:
-                msg (ForceObjectDeleteMessage): input ForceObjectDeleteMessage to be serialized.
+        Args:
+            msg (ForceObjectDeleteMessage): input ForceObjectDeleteMessage to be serialized.
 
-            Returns:
-                proto_msg (ForceObjectDeleteMessagePB): serialized ForceObjectDeleteMessage.
+        Returns:
+            proto_msg (ForceObjectDeleteMessagePB): serialized ForceObjectDeleteMessage.
         """
         proto_msg = ForceObjectDeleteMessagePB()
-        sy.serde.protobuf.proto.set_protobuf_id(proto_msg.object_id, msg.object_id)
+        for elem in msg.object_ids:
+            id = IdPB()
+            if isinstance(elem, str):
+                id.id_str = elem
+            else:
+                id.id_int = elem
+            proto_msg.object_ids.append(id)
         return proto_msg
 
     @staticmethod
     def unbufferize(worker, proto_msg):
         """
-            This method deserializes ForceObjectDeleteMessagePB into ForceObjectDeleteMessage.
+        This method deserializes ForceObjectDeleteMessagePB into ForceObjectDeleteMessage.
 
-            Args:
-                proto_msg (ForceObjectDeleteMessagePB): input serialized ForceObjectDeleteMessagePB.
+        Args:
+            proto_msg (ForceObjectDeleteMessagePB): input serialized ForceObjectDeleteMessagePB.
 
-            Returns:
-                ForceObjectDeleteMessage: deserialized ForceObjectDeleteMessagePB.
+        Returns:
+            ForceObjectDeleteMessage: deserialized ForceObjectDeleteMessagePB.
         """
-        obj_id = sy.serde.protobuf.proto.get_protobuf_id(proto_msg.object_id)
-        return ForceObjectDeleteMessage(obj_id=obj_id)
+        obj_ids = []
+        for elem in proto_msg.object_ids:
+            obj_ids.append(getattr(elem, elem.WhichOneof("id")))
+
+        return ForceObjectDeleteMessage(obj_ids=obj_ids)
 
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for ForceObjectDeleteMessage.
+        Returns the protobuf schema used for ForceObjectDeleteMessage.
 
-            Returns:
-                Protobuf schema for ForceObjectDeleteMessage.
+        Returns:
+            Protobuf schema for ForceObjectDeleteMessage.
         """
         return ForceObjectDeleteMessagePB
 
@@ -756,13 +770,13 @@ class SearchMessage(Message):
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a SearchMessage using SearchMessagePB.
+        This method serializes a SearchMessage using SearchMessagePB.
 
-            Args:
-                msg (SearchMessage): input SearchMessage to be serialized.
+        Args:
+            msg (SearchMessage): input SearchMessage to be serialized.
 
-            Returns:
-                proto_msg (SearchMessagePB): serialized SearchMessage.
+        Returns:
+            proto_msg (SearchMessagePB): serialized SearchMessage.
         """
         proto_msg = SearchMessagePB()
         for elem in msg.query:
@@ -777,13 +791,13 @@ class SearchMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_obj):
         """
-            This method deserializes SearchMessagePB into SearchMessage.
+        This method deserializes SearchMessagePB into SearchMessage.
 
-            Args:
-                proto_msg (SearchMessagePB): input serialized SearchMessagePB.
+        Args:
+            proto_msg (SearchMessagePB): input serialized SearchMessagePB.
 
-            Returns:
-                SearchMessage: deserialized SearchMessagePB.
+        Returns:
+            SearchMessage: deserialized SearchMessagePB.
         """
         query = []
         for elem in proto_obj.query:
@@ -794,10 +808,10 @@ class SearchMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for SearchMessage.
+        Returns the protobuf schema used for SearchMessage.
 
-            Returns:
-                Protobuf schema for SearchMessage.
+        Returns:
+            Protobuf schema for SearchMessage.
         """
         return SearchMessagePB
 
@@ -863,13 +877,13 @@ class PlanCommandMessage(Message):
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a PlanCommandMessage using PlanCommandMessagePB.
+        This method serializes a PlanCommandMessage using PlanCommandMessagePB.
 
-            Args:
-                msg (PlanCommandMessage): input PlanCommandMessage to be serialized.
+        Args:
+            msg (PlanCommandMessage): input PlanCommandMessage to be serialized.
 
-            Returns:
-                proto_msg (PlanCommandMessagePB): serialized PlanCommandMessage.
+        Returns:
+            proto_msg (PlanCommandMessagePB): serialized PlanCommandMessage.
         """
         proto_msg = PlanCommandMessagePB()
         proto_msg.command_name = msg.command_name
@@ -880,13 +894,13 @@ class PlanCommandMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_msg):
         """
-            This method deserializes PlanCommandMessagePB into PlanCommandMessage.
+        This method deserializes PlanCommandMessagePB into PlanCommandMessage.
 
-            Args:
-                proto_msg (PlanCommandMessagePB): input serialized PlanCommandMessagePB.
+        Args:
+            proto_msg (PlanCommandMessagePB): input serialized PlanCommandMessagePB.
 
-            Returns:
-                PlanCommandMessage: deserialized PlanCommandMessagePB.
+        Returns:
+            PlanCommandMessage: deserialized PlanCommandMessagePB.
         """
         args = sy.serde.protobuf.serde.unbufferize_args(worker, proto_msg.args)
         return PlanCommandMessage(command_name=proto_msg.command_name, args_=tuple(args))
@@ -894,10 +908,10 @@ class PlanCommandMessage(Message):
     @staticmethod
     def get_protobuf_schema():
         """
-            Returns the protobuf schema used for PlanCommandMessage.
+        Returns the protobuf schema used for PlanCommandMessage.
 
-            Returns:
-                Protobuf schema for PlanCommandMessage.
+        Returns:
+            Protobuf schema for PlanCommandMessage.
         """
         return PlanCommandMessagePB
 
@@ -966,13 +980,13 @@ class WorkerCommandMessage(Message):
     @staticmethod
     def bufferize(worker, msg):
         """
-            This method serializes a WorkerCommandMessage using WorkerCommandMessagePB.
+        This method serializes a WorkerCommandMessage using WorkerCommandMessagePB.
 
-            Args:
-                msg (WorkerCommandMessage): input WorkerCommandMessage to be serialized.
+        Args:
+            msg (WorkerCommandMessage): input WorkerCommandMessage to be serialized.
 
-            Returns:
-                proto_msg (WorkerCommandMessagePB): serialized WorkerCommandMessage.
+        Returns:
+            proto_msg (WorkerCommandMessagePB): serialized WorkerCommandMessage.
         """
         proto_msg = WorkerCommandMessage()
         proto_msg.command_name = msg.command_name
@@ -983,13 +997,13 @@ class WorkerCommandMessage(Message):
     @staticmethod
     def unbufferize(worker, proto_msg):
         """
-            This method deserializes WorkerCommandMessagePB into WorkerCommandMessage.
+        This method deserializes WorkerCommandMessagePB into WorkerCommandMessage.
 
-            Args:
-                proto_msg (WorkerCommandMessagePB): input serialized WorkerCommandMessagePB.
+        Args:
+            proto_msg (WorkerCommandMessagePB): input serialized WorkerCommandMessagePB.
 
-            Returns:
-                WorkerCommandMessage: deserialized WorkerCommandMessagePB.
+        Returns:
+            WorkerCommandMessage: deserialized WorkerCommandMessagePB.
         """
         args = sy.serde.protobuf.serde.unbufferize_args(worker, proto_msg.args)
         return WorkerCommandMessage(command_name=proto_msg.command_name, args_=tuple(args))
@@ -1004,3 +1018,117 @@ class WorkerCommandMessage(Message):
     #             Protobuf schema for WorkerCommandMessage.
     #     """
     #     return WorkerCommandMessagePB
+
+
+class CryptenInitPlan(Message):
+    """Initialize a Crypten party using this message.
+
+    Crypten uses processes as parties, those processes need to be initialized with information
+    so they can communicate and exchange tensors and shares while doing computation. This message
+    allows the exchange of information such as the ip and port of the master party to connect to,
+    as well as the rank of the party to run and the number of parties involved."""
+
+    def __init__(self, crypten_context, model=None):
+        # crypten_context = (rank_to_worker_ids, world_size, master_addr, master_port)
+        self.crypten_context = crypten_context
+        self.model = model
+
+    def __str__(self):
+        """Return a human readable version of this message"""
+        return f"({type(self).__name__} {self.crypten_context})"
+
+    @staticmethod
+    def simplify(worker: AbstractWorker, message: "CryptenInitPlan") -> tuple:
+        """
+        This function takes the attributes of a CryptenInitPlan and saves them in a tuple
+
+        Args:
+            worker (AbstractWorker): a reference to the worker doing the serialization
+            ptr (CryptenInitPlan): a Message
+
+        Returns:
+            tuple: a tuple holding the unique attributes of the message
+        """
+        return (
+            sy.serde.msgpack.serde._simplify(worker, (*message.crypten_context, message.model)),
+        )
+
+    @staticmethod
+    def detail(worker: AbstractWorker, msg_tuple: tuple) -> "CryptenInitPlan":
+        """
+        This function takes the simplified tuple version of this message and converts
+        it into a CryptenInitPlan. The simplify() method runs the inverse of this method.
+
+        Args:
+            worker (AbstractWorker): a reference to the worker necessary for detailing. Read
+                syft/serde/serde.py for more information on why this is necessary.
+            msg_tuple (Tuple): the raw information being detailed.
+
+        Returns:
+            CryptenInitPlan message.
+
+        Examples:
+            message = detail(sy.local_worker, msg_tuple)
+        """
+        msg_tuple = sy.serde.msgpack.serde._detail(worker, msg_tuple[0])
+        *context, model = msg_tuple
+        return CryptenInitPlan(tuple(context), model)
+
+
+class CryptenInitJail(Message):
+    """Initialize a Crypten party using this message.
+
+    Crypten uses processes as parties, those processes need to be initialized with information
+    so they can communicate and exchange tensors and shares while doing computation. This message
+    allows the exchange of information such as the ip and port of the master party to connect to,
+    as well as the rank of the party to run and the number of parties involved. Compared to
+    CryptenInitPlan, this message also sends two extra fields, a JailRunner and a Crypten model."""
+
+    def __init__(self, crypten_context, jail_runner, model=None):
+        # crypten_context = (rank_to_worker_ids, world_size, master_addr, master_port)
+        self.crypten_context = crypten_context
+        self.jail_runner = jail_runner
+        self.model = model
+
+    def __str__(self):
+        """Return a human readable version of this message"""
+        return f"({type(self).__name__} {self.crypten_context}, {self.jail_runner})"
+
+    @staticmethod
+    def simplify(worker: AbstractWorker, message: "CryptenInitJail") -> tuple:
+        """
+        This function takes the attributes of a CryptenInitJail and saves them in a tuple
+
+        Args:
+            worker (AbstractWorker): a reference to the worker doing the serialization
+            ptr (CryptenInitJail): a Message
+
+        Returns:
+            tuple: a tuple holding the unique attributes of the message
+        """
+        return (
+            sy.serde.msgpack.serde._simplify(
+                worker, (*message.crypten_context, message.jail_runner, message.model)
+            ),
+        )
+
+    @staticmethod
+    def detail(worker: AbstractWorker, msg_tuple: tuple) -> "CryptenInitJail":
+        """
+        This function takes the simplified tuple version of this message and converts
+        it into a CryptenInitJail. The simplify() method runs the inverse of this method.
+
+        Args:
+            worker (AbstractWorker): a reference to the worker necessary for detailing. Read
+                syft/serde/serde.py for more information on why this is necessary.
+            msg_tuple (Tuple): the raw information being detailed.
+
+        Returns:
+            CryptenInitJail message.
+
+        Examples:
+            message = detail(sy.local_worker, msg_tuple)
+        """
+        msg_tuple = sy.serde.msgpack.serde._detail(worker, msg_tuple[0])
+        *context, jail_runner, model = msg_tuple
+        return CryptenInitJail(tuple(context), jail_runner, model)

@@ -4,7 +4,7 @@ from abc import abstractmethod
 import syft as sy
 from syft.execution.placeholder import PlaceHolder
 from syft.execution.placeholder_id import PlaceholderId
-from syft.serde.syft_serializable import SyftSerializable
+from syft.generic.abstract.syft_serializable import SyftSerializable
 from syft.workers.abstract import AbstractWorker
 
 
@@ -66,7 +66,7 @@ class Action(ABC, SyftSerializable):
     def code(self, var_names=None) -> str:
         """Returns pseudo-code representation of computation action"""
 
-        def stringify(obj):
+        def stringify(obj, unroll_lists=True):
             if isinstance(obj, PlaceholderId):
                 id = obj.value
                 if var_names is None:
@@ -81,7 +81,7 @@ class Action(ABC, SyftSerializable):
                         ret = name
             elif isinstance(obj, PlaceHolder):
                 ret = stringify(obj.id)
-            elif isinstance(obj, (tuple, list)):
+            elif isinstance(obj, (tuple, list)) and unroll_lists:
                 ret = ", ".join(stringify(o) for o in obj)
             else:
                 ret = str(obj)
@@ -94,7 +94,8 @@ class Action(ABC, SyftSerializable):
         if self.target is not None:
             out += stringify(self.target) + "."
         out += self.name + "("
-        out += stringify(self.args)
+        if len(self.args) > 0:
+            out += ", ".join([stringify(arg, unroll_lists=False) for arg in self.args])
         if self.kwargs:
             if len(self.args) > 0:
                 out += ", "
@@ -109,10 +110,11 @@ class Action(ABC, SyftSerializable):
 
     def _type_check(self, field_name, expected_type):
         actual_value = getattr(self, field_name)
-        assert actual_value is None or isinstance(actual_value, expected_type), (
-            f"{field_name} must be {expected_type.__name__}, but was "
-            f"{type(actual_value).__name__}: {actual_value}."
-        )
+        if not (actual_value is None or isinstance(actual_value, expected_type)):
+            raise ValueError(
+                f"{field_name} must be {expected_type.__name__}, but was "
+                f"{type(actual_value).__name__}: {actual_value}."
+            )
 
     # These methods must be implemented by child classes in order to return the correct type
     # and to be detected by the serdes as serializable. They are therefore marked as abstract

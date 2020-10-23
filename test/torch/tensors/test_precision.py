@@ -37,6 +37,33 @@ def test_fix_prec_registration(hook):
         assert hook.local_worker.get_obj(x.id) == x
 
 
+def test_fixed_precision_mod_operation(workers):
+    alice, bob, james = workers["alice"], workers["bob"], workers["james"]
+
+    # Test mod operation with scalar (method syntax)
+    x = torch.tensor([1, 2, 3]).fix_prec()
+    y = x % 3
+    y = y.float_prec()
+    assert (y == torch.tensor([1.0, 2.0, 0.0])).all()
+
+    # Test mod operation with scalar (function syntax)
+    x = torch.tensor([1, 2, 3]).fix_prec()
+    y = torch.fmod(x, 3)
+    y = y.float_prec()
+    assert (y == torch.tensor([1.0, 2.0, 0.0])).all()
+
+    # Test mod operation with another FPT
+    x = torch.tensor([1, 2, 3]).fix_prec()
+    y = torch.tensor([3]).fix_prec()
+    z = (x % y).float_prec()
+    assert (z == torch.tensor([1.0, 2.0, 0.0])).all()
+
+    # Test mod operation AST-on-scalar
+    x = torch.tensor([1, 2, 3]).fix_prec().share(bob, alice, crypto_provider=james)
+    y = x % 3  # Moded shares
+    assert ((y.get() % 3).float_prec() == torch.tensor([1.0, 2.0, 0.0])).all()
+
+
 def test_inplace_encode_decode(workers):
 
     x = torch.tensor([0.1, 0.2, 0.3])
@@ -74,6 +101,25 @@ def test_methods_for_linear_module(method, parameter):
         result = getattr(tensor, method)()
 
     assert (result == fp_result.float_precision()).all()
+
+
+def test_reciprocal(workers):
+    bob, alice, james = (workers["bob"], workers["alice"], workers["james"])
+
+    tensor = torch.tensor([-2.0, 6.0, 2.0, 3.0, -5.0, -0.5])
+    x = tensor.fix_prec()
+    result = x.reciprocal(method="division").float_prec()
+    assert torch.isclose(tensor.reciprocal(), result, rtol=1e-2).all()
+
+    x = tensor.fix_prec()
+    result = x.share(bob, alice, crypto_provider=james)
+    result = result.reciprocal(method="NR").get().float_prec()
+    assert torch.isclose(tensor.reciprocal(), result, atol=1e-2).all()
+
+    x = tensor.fix_prec()
+    result = x.share(bob, alice, crypto_provider=james)
+    result = result.reciprocal(method="Log").get().float_prec()
+    assert torch.isclose(tensor.reciprocal(), result, atol=5e-1).all()
 
 
 def test_torch_add(workers):
@@ -645,3 +691,38 @@ def test_dtype():
         and x.child.field == 2 ** 64
         and isinstance(x.child.child, torch.LongTensor)
     )
+
+
+def test_reconstruct(workers):
+    bob, alice, james = (workers["bob"], workers["alice"], workers["james"])
+    plain_text = torch.tensor([3, -7, 11])
+
+    # test for (wrapper) > FPT > RST
+    secret = plain_text.fix_prec().share(bob, alice, james, protocol="falcon", field=2 ** 20)
+    decryption = secret.reconstruct().float_prec()
+    assert (plain_text == decryption).all()
+
+    # exception test for AST
+    secret = plain_text.fix_prec().share(bob, alice, crypto_provider=james)
+    with pytest.raises(ValueError):
+        decryption = secret.child.reconstruct()
+
+
+def test_ring_size(workers):
+    bob, alice, james = (workers["bob"], workers["alice"], workers["james"])
+    plain_text = torch.tensor([3, -7, 11])
+    ring_size = 2 ** 5
+
+    # test for (wrapper) > FPT > RST
+    secret = plain_text.fix_prec().share(bob, alice, james, protocol="falcon", field=ring_size)
+    assert secret.ring_size == ring_size
+
+    # exception test for AST
+    secret = plain_text.share(bob, alice, crypto_provider=james)
+    with pytest.raises(ValueError):
+        ring_size_ = secret.ring_size
+
+    # exception test for FPT
+    secret = plain_text.fix_prec()
+    with pytest.raises(ValueError):
+        ring_size_ = secret.ring_size

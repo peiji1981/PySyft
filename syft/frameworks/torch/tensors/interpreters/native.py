@@ -3,6 +3,8 @@ import weakref
 import warnings
 
 import torch
+from syft.frameworks.torch.tensors.interpreters.precision import FixedPrecisionTensor
+from syft.frameworks.torch.tensors.interpreters.replicated_shared import ReplicatedSharingTensor
 
 import syft
 from syft.generic.frameworks.hook import hook_args
@@ -36,8 +38,7 @@ def _get_maximum_precision():
 
 
 def default_pytorch_maximum_precision():
-    """Dealing with integers > 2**63-1 is not fun with precision tensors.
-    """
+    """Dealing with integers > 2**63-1 is not fun with precision tensors."""
     return 63
 
 
@@ -57,9 +58,6 @@ class TorchTensor(AbstractTensor):
 
     origin = None
     id_at_origin = None
-
-    def has_child(self):
-        return hasattr(self, "child")
 
     def trigger_origin_backward_hook(self, origin: str, id_at_origin: int):
         """
@@ -92,6 +90,55 @@ class TorchTensor(AbstractTensor):
             self.owner.send_msg(message=message, location=location)
 
         return trigger_origin_backward
+
+    def register_callback_hook(self, message, location):
+        """
+        Register a Torch hook (that is triggered when the `self` tensor has a gradient
+        update) which will send back to a location a specific message whose arguments
+        are updated with a reference to `self`.
+
+        Args:
+            message (Message): the message to send back
+            location (BaseWorker): the worker to which the message should be sent
+        """
+        location = self.owner.get_worker(location)
+
+        def callback(grad):
+            if not isinstance(grad, torch.Tensor):
+                raise TypeError("Grad in callback should be a Tensor")
+            # the grad tensor is created by the torch backprop and might not be registered properly
+            self.owner.register_obj(grad)
+            pointer = PointerTensor(
+                location=self.owner,
+                id_at_location=grad.id,
+                owner=location,
+                id=syft.ID_PROVIDER.pop(),
+            )
+            # update the message arguments
+            message.action.args = (pointer,)
+            self.owner.send_msg(message=message, location=location)
+            # De-register the grad after the callback has been handled
+            self.owner.de_register_obj(grad)
+
+        self.register_hook(callback)
+
+    def trigger_hook_function(self, outputs):
+        """
+        Run the hook function stored in the _hook_function attribute using the
+        pointer to the gradient received.
+
+        trigger_hook_function is called on the tensor while it can be run on the
+        tensor.grad_fn (confusion is due to both sharing the same id), that's why
+        we check the grad_fn attribute also. For module hooks, grad_fn will be
+        used, for simple tensor hooks, it won't by default.
+
+        Args:
+            outputs (PointerTensor): a pointer to a remote gradient
+        """
+        if hasattr(self.child.grad_fn.child, "_hook_function"):
+            self.child.grad_fn.child._hook_function(inputs=None, outputs=(outputs.wrap(),))
+        else:
+            self.child._hook_function(inputs=None, outputs=(outputs.wrap(),))
 
     def set_grad(self, grad):
         self.grad = grad
@@ -146,6 +193,27 @@ class TorchTensor(AbstractTensor):
             return self.native_data
 
     @property
+    def grad_fn(self):
+        if self.is_wrapper:
+            return self.child.grad_fn
+        else:
+            return self.native_grad_fn
+
+    @grad_fn.setter
+    def grad_fn(self, new_grad_fn):
+        if new_grad_fn is not None and (
+            not isinstance(new_grad_fn, torch.Tensor) or hasattr(new_grad_fn, "child")
+        ):
+            self.child.grad_fn = new_grad_fn
+        else:
+            if hasattr(self, "native_grad_fn"):
+                with torch.no_grad():
+                    self.native_grad_fn = new_grad_fn
+            elif new_grad_fn is not None:
+                self.native_grad_fn = new_grad_fn
+        return self
+
+    @property
     def grad(self):
         if self.is_wrapper:
             child_grad = self.child.grad
@@ -186,6 +254,20 @@ class TorchTensor(AbstractTensor):
             elif new_grad is not None:
                 self.native_grad = new_grad
         return self
+
+    @property
+    def players(self):
+        if hasattr(self, "child") and isinstance(self.child, ReplicatedSharingTensor):
+            return self.child.players
+        raise ValueError('Only ReplicatedSharingTensors have property "players"')
+
+    @property
+    def ring_size(self):
+        if hasattr(self, "child") and isinstance(
+            self.child, (FixedPrecisionTensor, ReplicatedSharingTensor)
+        ):
+            return self.child.ring_size
+        raise ValueError('only ReplicatedSharingTensors have property "ring_size"')
 
     def __str__(self) -> str:
         if self.has_child():
@@ -284,13 +366,25 @@ class TorchTensor(AbstractTensor):
         """
         return isinstance(self, torch.nn.Parameter)
 
-    # Fix handle_command_function to correct this. #2637
     @staticmethod
     @overloaded.module
     def torch(module):
+        @overloaded.module
+        def nn(module):
+            """
+            The syntax is the same, so @overloaded.module handles recursion
+            Note that we don't need to add the @staticmethod decorator
+            """
+
+        module.nn = nn  # Handles all the overloading properly
+
+    @staticmethod
+    @overloaded.module
+    def native_torch(module):
         def roll(tensor, shifts, **kwargs):
-            int_shifts = int(shifts.item())
-            return torch.native_roll(tensor, int_shifts, **kwargs)
+            if isinstance(shifts, FrameworkTensor):
+                shifts = int(shifts.item())
+            return torch.native_roll(tensor, shifts, **kwargs)
 
         module.roll = roll
 
@@ -299,11 +393,9 @@ class TorchTensor(AbstractTensor):
         """
         Operates as a router for functions. A function call always starts
         by being handled here and 3 scenarii must be considered:
-
         Real Torch tensor:
             The arguments of the function are real tensors so we should
             run the native torch command
-
         Torch wrapper:
             The arguments are just wrappers at the top of a chain
             (ex: wrapper>LoggingTensor>Torch tensor), so just forward
@@ -311,7 +403,6 @@ class TorchTensor(AbstractTensor):
             the example above to LoggingTensor.handle_func_command),
             get the response and replace a wrapper on top of all tensors
             found in the response.
-
         Syft Tensor:
             The arguments are syft tensors of same type: this can happen
             if at any node of the chain where some function is forwarded,
@@ -319,7 +410,6 @@ class TorchTensor(AbstractTensor):
             call but keeps the arguments "un-wrapped". Making a new call
             means that by default the command is treated here in the
             global router.
-
         :param command: instruction of a function command: (command name,
         <no self>, arguments[, kwargs_])
         :return: the response of the function command
@@ -327,7 +417,6 @@ class TorchTensor(AbstractTensor):
         cmd, _, args_, kwargs_ = command
 
         try:  # will work if tensors are wrappers
-
             # Replace all torch tensor with their child attribute
             # Note that we return also args_type which helps handling case 3 in the docstring
             new_args, new_kwargs, new_type, args_type = hook_args.unwrap_args_from_function(
@@ -339,6 +428,15 @@ class TorchTensor(AbstractTensor):
                 return args_type.handle_func_command(command)
             # build the new command
             new_command = (cmd, None, new_args, new_kwargs)
+
+            # Check that the function has not been overwritten
+            try:
+                # Try to get recursively the attributes in cmd = "<attr1>.<attr2>.<attr3>..."
+                command = cls.rgetattr(cls, cmd)
+                return command(*args_, **kwargs_)
+            except AttributeError:
+                pass
+
             # Send it to the appropriate class and get the response
             try:
                 response = new_type.handle_func_command(new_command)
@@ -356,7 +454,7 @@ class TorchTensor(AbstractTensor):
             # Check that the function has not been overwritten
             try:
                 # Try to get recursively the attributes in cmd = "<attr1>.<attr2>.<attr3>..."
-                command = cls.rgetattr(cls, cmd)
+                command = cls.rgetattr(cls, f"native_{cmd}")
                 return command(*args_, **kwargs_)
             except AttributeError:
                 pass
@@ -407,7 +505,7 @@ class TorchTensor(AbstractTensor):
 
     def _fix_torch_library(cmd):
         """
-        Change the cmd string parameter to use nn.functional path to avoid erros.
+        Change the cmd string parameter to use nn.functional path to avoid errors.
         """
         if "_C._nn" in cmd:
             cmd = cmd.replace("_C._nn", "nn.functional")
@@ -464,7 +562,7 @@ class TorchTensor(AbstractTensor):
 
             location = location[0]
 
-            if hasattr(self, "child") and isinstance(self.child, PointerTensor):
+            if self.has_child() and isinstance(self.child, PointerTensor):
                 self.child.garbage_collect_data = False
                 if self._is_parameter():
                     self.data.child.garbage_collect_data = False
@@ -601,7 +699,7 @@ class TorchTensor(AbstractTensor):
 
     def mid_get(self):
         """This method calls .get() on a child pointer and correctly registers the results"""
-        if not hasattr(self, "child"):
+        if not self.has_child():
             raise InvalidTensorForRemoteGet(self)
 
         self.child.mid_get()
@@ -612,7 +710,7 @@ class TorchTensor(AbstractTensor):
 
         TODO: make this kind of message forwarding generic?
         """
-        if not hasattr(self, "child"):
+        if not self.has_child():
             raise InvalidTensorForRemoteGet(self)
 
         self.child.remote_get()
@@ -655,7 +753,7 @@ class TorchTensor(AbstractTensor):
                 return tensor
 
         if inplace:
-            self.set_(tensor)
+            self.set_(tensor.native_type(self.dtype))
             if hasattr(tensor, "child"):
                 self.child = tensor.child
             else:
@@ -671,7 +769,7 @@ class TorchTensor(AbstractTensor):
         return self.get(*args, inplace=True, **kwargs)
 
     def allow(self, user=None) -> bool:
-        """ This function returns will return True if it isn't a PrivateTensor, otherwise it will
+        """This function returns will return True if it isn't a PrivateTensor, otherwise it will
         return the result of PrivateTensor's allow method.
 
             Args:
@@ -829,7 +927,6 @@ class TorchTensor(AbstractTensor):
             no_wrap (bool): if True, we don't add a wrapper on top of the fixed precision tensor
             **kwargs (dict): kwargs to transmit to the fixed precision tensor
         """
-
         if not kwargs.get("owner"):
             kwargs["owner"] = self.owner
 
@@ -911,23 +1008,28 @@ class TorchTensor(AbstractTensor):
             if self.type() == "torch.FloatTensor":
                 raise TypeError("FloatTensor cannot be additively shared, Use fix_precision.")
 
-            shared_tensor = (
-                syft.AdditiveSharingTensor(
-                    protocol=protocol,
-                    field=field,
-                    dtype=dtype,
-                    crypto_provider=crypto_provider,
-                    owner=self.owner,
+            if protocol == "falcon":
+                shared_tensor = syft.ReplicatedSharingTensor(
+                    self, owners, ring_size=field, owner=self.owner
                 )
-                .on(self.copy(), wrap=False)
-                .init_shares(*owners)
-            )
+            else:
+                shared_tensor = (
+                    syft.AdditiveSharingTensor(
+                        protocol=protocol,
+                        field=field,
+                        dtype=dtype,
+                        crypto_provider=crypto_provider,
+                        owner=self.owner,
+                    )
+                    .on(self.copy(), wrap=False)
+                    .share_secret(*owners)
+                )
 
         if requires_grad and not isinstance(shared_tensor, syft.PointerTensor):
             shared_tensor = syft.AutogradTensor().on(shared_tensor, wrap=False)
 
         if not no_wrap:
-            shared_tensor = shared_tensor.wrap()
+            shared_tensor = shared_tensor.wrap(type=self.dtype)
 
         return shared_tensor
 
@@ -959,7 +1061,8 @@ class TorchTensor(AbstractTensor):
 
         """
 
-        assert isinstance(self.child, PointerTensor)
+        if not isinstance(self.child, PointerTensor):
+            raise TypeError("child should be a PointerTensor")
 
         ps = list(pointers)
         ps.append(self)
@@ -973,15 +1076,26 @@ class TorchTensor(AbstractTensor):
         else:
             return self.child.torch_type()
 
-    def encrypt(self, protocol="mpc", **kwargs):
+    def encrypt(self, protocol="mpc", inplace=False, **kwargs):
         """
         This method will encrypt each value in the tensor using Multi Party
         Computation (default) or Paillier Homomorphic Encryption
 
         Args:
-            protocol (str): Currently supports 'mpc' for Multi Party
-                Computation and 'paillier' for Paillier Homomorphic Encryption
+            protocol (str): Currently supports the following crypto protocols:
+                - 'snn' for SecureNN
+                - 'fss' for Function Secret Sharing (see AriaNN paper)
+                - 'mpc' (Multi Party Computation) defaults to most standard protocol,
+                    currently 'snn'
+                - 'paillier' for Paillier Homomorphic Encryption
+
+            inplace (bool): compute the operation inplace (default is False)
+
             **kwargs:
+                With respect to Fixed Precision accepts:
+                    precision_fractional (int)
+                    dtype (str)
+
                 With Respect to MPC accepts:
                     workers (list): Parties involved in the sharing of the Tensor
                     crypto_provider (syft.VirtualWorker): Worker responsible for the
@@ -1002,22 +1116,33 @@ class TorchTensor(AbstractTensor):
             NotImplementedError: If protocols other than the ones mentioned above are queried
 
         """
-        if protocol.lower() == "mpc":
+        protocol = protocol.lower()
+
+        if protocol in {"mpc", "snn", "fss"}:
+            if protocol == "mpc":
+                protocol = "snn"
             workers = kwargs.pop("workers")
             crypto_provider = kwargs.pop("crypto_provider")
             requires_grad = kwargs.pop("requires_grad", False)
             no_wrap = kwargs.pop("no_wrap", False)
+            dtype = kwargs.get("dtype")
             kwargs_fix_prec = kwargs  # Rest of kwargs for fix_prec method
-
-            x_shared = self.fix_prec(**kwargs_fix_prec).share(
-                *workers,
+            kwargs_share = dict(
                 crypto_provider=crypto_provider,
                 requires_grad=requires_grad,
                 no_wrap=no_wrap,
+                protocol=protocol,
+                dtype=dtype,
             )
-            return x_shared
 
-        elif protocol.lower() == "paillier":
+            if not inplace:
+                x_shared = self.fix_prec(**kwargs_fix_prec).share(*workers, **kwargs_share)
+                return x_shared
+            else:
+                self.fix_prec_(**kwargs_fix_prec).share_(*workers, **kwargs_share)
+                return self
+
+        elif protocol == "paillier":
             public_key = kwargs.get("public_key")
 
             x = self.copy()
@@ -1029,15 +1154,16 @@ class TorchTensor(AbstractTensor):
         else:
             raise NotImplementedError(
                 "Currently the .encrypt() method only supports Paillier Homomorphic "
-                "Encryption and Secure Multi-Party Computation"
+                f"Encryption and Secure Multi-Party Computation, but {protocol} was given"
             )
 
-    def decrypt(self, **kwargs):
+    def decrypt(self, inplace=False, **kwargs):
         """
         This method will decrypt each value in the tensor using Multi Party
         Computation (default) or Paillier Homomorphic Encryption
 
         Args:
+            inplace (bool): compute the operation inplace (default is False)
             **kwargs:
                 With Respect to MPC accepts:
                     None
@@ -1058,9 +1184,13 @@ class TorchTensor(AbstractTensor):
             warnings.warn("protocol should no longer be used in decrypt")
 
         if isinstance(self.child, (syft.FixedPrecisionTensor, syft.AutogradTensor)):
-            x_encrypted = self.copy()
-            x_decrypted = x_encrypted.get().float_prec()
-            return x_decrypted
+            if not inplace:
+                x_encrypted = self.copy()
+                x_decrypted = x_encrypted.get().float_prec()
+                return x_decrypted
+            else:
+                self.get_().float_prec_()
+                return self
 
         elif isinstance(self.child, PaillierTensor):
             # self.copy() not required as PaillierTensor's decrypt method is not inplace
@@ -1085,3 +1215,8 @@ class TorchTensor(AbstractTensor):
                 "on a wrapper. Add NumpyTensor to the chain by hand if you want "
                 "this functionality.",
             )
+
+    def reconstruct(self):
+        if not isinstance(self.child, (ReplicatedSharingTensor, FixedPrecisionTensor)):
+            raise ValueError("reconstruct can only be called for RST and FPT")
+        return self.child.get()

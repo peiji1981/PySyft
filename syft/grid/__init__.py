@@ -1,6 +1,7 @@
-from .network import Network
 import sys
 import uuid
+
+from syft.grid.rtc.network import Network
 
 DEFAULT_NETWORK_URL = "ws://ec2-13-59-45-128.us-east-2.compute.amazonaws.com"
 
@@ -8,9 +9,9 @@ _registered_peer = None
 
 
 def register(**kwargs):
-    """ Add this process as a new peer registering it in the grid network.
-        Returns:
-            peer: Peer Network instance.
+    """Add this process as a new peer registering it in the grid network.
+    Returns:
+        peer: Peer Network instance.
     """
     global _registered_peer
 

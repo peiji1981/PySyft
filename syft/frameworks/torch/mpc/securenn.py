@@ -73,9 +73,10 @@ def flip(x, dim, dtype):
     """
     Reverse the order of the elements in a tensor
     """
-    assert (
-        x.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if x.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
     indices = torch.arange(x.shape[dim] - 1, -1, -1).type(dtype)
 
     if hasattr(x, "child") and isinstance(x.child, dict):
@@ -84,12 +85,12 @@ def flip(x, dim, dtype):
     return x.index_select(dim, indices)
 
 
-def _random_common_bit(*workers):
+def _random_common_bit(*workers, dtype):
     """
     Return a bit chosen by a worker and sent to all workers,
     in the form of a MultiPointerTensor
     """
-    pointer = torch.tensor([1]).send(workers[0], **no_wrap).random_(2)
+    pointer = torch.tensor([1], dtype=dtype).send(workers[0], **no_wrap).random_(2)
     pointers = [pointer]
     for worker in workers[1:]:
         pointers.append(pointer.copy().move(worker))
@@ -135,7 +136,7 @@ def _shares_of_zero(size, field, dtype, crypto_provider, *workers):
 
 
 def select_share(alpha_sh, x_sh, y_sh):
-    """ Performs select share protocol
+    """Performs select share protocol
     If the bit alpha_sh is 0, x_sh is returned
     If the bit alpha_sh is 1, y_sh is returned
 
@@ -147,9 +148,10 @@ def select_share(alpha_sh, x_sh, y_sh):
     Return:
         z_sh = (1 - alpha_sh) * x_sh + alpha_sh * y_sh
     """
-    assert (
-        alpha_sh.dtype == x_sh.dtype == y_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if not (alpha_sh.dtype == x_sh.dtype == y_sh.dtype != "custom"):
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     workers = alpha_sh.locations
     crypto_provider = alpha_sh.crypto_provider
@@ -183,9 +185,13 @@ def private_compare(x_bit_sh, r, beta, L):
     return:
         β′ = β ⊕ (x > r).
     """
-    assert isinstance(x_bit_sh, sy.AdditiveSharingTensor)
-    assert isinstance(r, sy.MultiPointerTensor)
-    assert isinstance(beta, sy.MultiPointerTensor)
+    if not isinstance(x_bit_sh, sy.AdditiveSharingTensor):
+        raise TypeError("x_bit_sh should be AdditiveSharingTensor.")
+    if not isinstance(r, sy.MultiPointerTensor):
+        raise TypeError("r should be MultiPointerTensor.")
+    if not isinstance(beta, sy.MultiPointerTensor):
+        raise TypeError("beta should be MultiPointerTensor.")
+
     # Would it be safer to have a different r/beta for each value in the tensor?
 
     workers = x_bit_sh.locations
@@ -282,16 +288,17 @@ def msb(a_sh):
     crypto_provider = a_sh.crypto_provider
     L = a_sh.field + 1  # field of a is L - 1
     dtype = get_dtype(L)
+    torch_dtype = get_torch_dtype(L)
     input_shape = a_sh.shape
-    a_sh = a_sh.view(-1)
+    a_sh = a_sh.reshape(-1)
 
     # the commented out numbers below correspond to the
     # line numbers in Table 5 of the SecureNN paper
     # https://eprint.iacr.org/2018/442.pdf
 
     # Common Randomness
-    beta = _random_common_bit(*workers)
     u = _shares_of_zero(1, L, dtype, crypto_provider, *workers)
+    beta = _random_common_bit(*workers, dtype=torch_dtype)
 
     # 1)
     x = torch.tensor(a_sh.shape).random_(get_max_val_field(L - 1))
@@ -323,7 +330,10 @@ def msb(a_sh):
 
     # 7)
     j = sy.MultiPointerTensor(
-        children=[torch.tensor([int(i == 0)]).send(w, **no_wrap) for i, w in enumerate(workers)]
+        children=[
+            torch.tensor([int(i == 0)], dtype=torch_dtype).send(w, **no_wrap)
+            for i, w in enumerate(workers)
+        ]
     )
     gamma = beta_prime_sh + (j * beta) - (2 * beta * beta_prime_sh)
 
@@ -378,10 +388,12 @@ def share_convert(a_sh):
     Return:
         An additive sharing tensor with shares in field L-1
     """
-    assert isinstance(a_sh, sy.AdditiveSharingTensor)
-    assert (
-        a_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if not isinstance(a_sh, sy.AdditiveSharingTensor):
+        raise TypeError("a_sh should be AdditiveSharingTensor")
+    if a_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     workers = a_sh.locations
     crypto_provider = a_sh.crypto_provider
@@ -487,14 +499,16 @@ def relu_deriv(a_sh):
         1 if Dec(a_sh) > 0
         encrypted in an AdditiveSharingTensor
     """
-    assert (
-        a_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if a_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     workers = a_sh.locations
     crypto_provider = a_sh.crypto_provider
     L = a_sh.field
     dtype = get_dtype(L)
+    torch_dtype = get_torch_dtype(L)
     # Common randomness
     u = _shares_of_zero(1, L, dtype, crypto_provider, *workers)
 
@@ -509,7 +523,10 @@ def relu_deriv(a_sh):
 
     # 4)
     j = sy.MultiPointerTensor(
-        children=[torch.tensor([int(i == 0)]).send(w, **no_wrap) for i, w in enumerate(workers)]
+        children=[
+            torch.tensor([int(i == 0)], dtype=torch_dtype).send(w, **no_wrap)
+            for i, w in enumerate(workers)
+        ]
     )
     gamma_sh = j - alpha_sh + u
     return gamma_sh
@@ -526,9 +543,10 @@ def relu(a_sh):
         Dec(a_sh) > 0
         encrypted in an AdditiveSharingTensor
     """
-    assert (
-        a_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if a_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     workers = a_sh.locations
     crypto_provider = a_sh.crypto_provider
@@ -543,7 +561,7 @@ def relu(a_sh):
 # In division, bit_len_max is set to Q_BITS // 2 to avoid overflow problems (multiplying by
 # 2**64 would almost always lead to overflow).
 def division(x_sh, y_sh, bit_len_max=None):
-    """ Performs division of encrypted numbers
+    """Performs division of encrypted numbers
 
     Args:
         x_sh, y_sh (AdditiveSharingTensor): the private tensors on which the op applies
@@ -551,9 +569,10 @@ def division(x_sh, y_sh, bit_len_max=None):
     Returns:
         element-wise integer division of x_sh by y_sh
     """
-    assert (
-        x_sh.dtype == y_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if not (x_sh.dtype == y_sh.dtype != "custom"):
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
     workers = x_sh.locations
     crypto_provider = x_sh.crypto_provider
     L = x_sh.field
@@ -563,7 +582,8 @@ def division(x_sh, y_sh, bit_len_max=None):
 
     x_shape = x_sh.shape
     y_shape = y_sh.shape
-    assert x_shape == y_shape or list(y_shape) == [1]
+    if not (x_shape == y_shape or list(y_shape) == [1]):
+        raise ValueError("Check shape of x_sh and y_sh")
 
     x_sh = x_sh.view(-1)
     y_sh = y_sh.view(-1)
@@ -601,7 +621,7 @@ def division(x_sh, y_sh, bit_len_max=None):
 
 
 def maxpool(x_sh):
-    """ Compute MaxPool: returns fresh shares of the max value in the input tensor
+    """Compute MaxPool: returns fresh shares of the max value in the input tensor
     and the index of this value in the flattened tensor
 
     Args:
@@ -611,9 +631,10 @@ def maxpool(x_sh):
         maximum value as an AdditiveSharingTensor
         index of this value in the flattened tensor as an AdditiveSharingTensor
     """
-    assert (
-        x_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if x_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     if x_sh.is_wrapper:
         x_sh = x_sh.child
@@ -656,7 +677,7 @@ def maxpool(x_sh):
 
 
 def maxpool_deriv(x_sh):
-    """ Compute derivative of MaxPool
+    """Compute derivative of MaxPool
 
     Args:
         x_sh (AdditiveSharingTensor): the private tensor on which the op applies
@@ -665,9 +686,10 @@ def maxpool_deriv(x_sh):
         an AdditiveSharingTensor of the same shape as x_sh full of zeros except for
         a 1 at the position of the max value
     """
-    assert (
-        x_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+    if x_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
 
     workers = x_sh.locations
     crypto_provider = x_sh.crypto_provider
@@ -677,7 +699,8 @@ def maxpool_deriv(x_sh):
 
     n1, n2 = x_sh.shape
     n = n1 * n2
-    assert L % n == 0
+    if L % n != 0:
+        raise ValueError("Check x_sh.field and x_sh.shape ")
     x_sh = x_sh.view(-1)
 
     # Common Randomness
@@ -717,10 +740,12 @@ def maxpool2d(a_sh, kernel_size: int = 1, stride: int = 1, padding: int = 0):
         stride: the stride of the window
         padding: implicit zero padding to be added on both sides
     """
-    assert (
-        a_sh.dtype != "custom"
-    ), "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
-    assert len(a_sh.shape) == 4
+    if a_sh.dtype == "custom":
+        raise TypeError(
+            "`custom` dtype shares are unsupported in SecureNN, use dtype = `long` or `int` instead"
+        )
+    if len(a_sh.shape) != 4:
+        raise ValueError("Size of a_sh.shape should be 4")
 
     # Change to tuple if not one
     kernel = torch.nn.modules.utils._pair(kernel_size)
@@ -758,7 +783,10 @@ def maxpool2d(a_sh, kernel_size: int = 1, stride: int = 1, padding: int = 0):
                 for c_in in range(0, nb_cols_in - (kernel[1] - 1), stride[1]):
                     m, _ = maxpool(
                         a_sh[
-                            batch, channel, r_in : r_in + kernel[0], c_in : c_in + kernel[1],
+                            batch,
+                            channel,
+                            r_in : r_in + kernel[0],
+                            c_in : c_in + kernel[1],
                         ].child
                     )
                     res.append(m.wrap())

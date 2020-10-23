@@ -1,22 +1,18 @@
+import types
 from abc import ABC
 from abc import abstractmethod
 from functools import wraps
-import types
 from typing import List
 
 import syft
-from syft.generic.frameworks.hook import hook_args
-
-from syft.generic.pointers.pointer_tensor import PointerTensor
-from syft.workers.base import BaseWorker
-
 from syft.exceptions import route_method_exception
-
-
+from syft.generic.frameworks.hook import hook_args
 from syft.generic.frameworks.hook.pointers import PointerHook
 from syft.generic.frameworks.hook.string import StringHook
 from syft.generic.frameworks.hook.tensors import TensorHook
+from syft.generic.frameworks.types import FrameworkTensor
 from syft.generic.pointers.pointer_tensor import PointerTensor
+from syft.workers.base import BaseWorker
 
 
 class FrameworkHook(TensorHook, PointerHook, StringHook, ABC):
@@ -115,6 +111,10 @@ class FrameworkHook(TensorHook, PointerHook, StringHook, ABC):
             # Send it to the appropriate class and get the response
             response = getattr(new_self, attr)(*new_args, **new_kwargs)
 
+            # For inplace methods, just directly return self
+            if syft.framework.is_inplace_method(attr):
+                return self
+
             # Put back SyftTensor on the tensors found in the response
             response = hook_args.hook_response(
                 attr, response, wrap_type=type(self), wrap_args=self.get_class_attributes()
@@ -196,6 +196,16 @@ class FrameworkHook(TensorHook, PointerHook, StringHook, ABC):
                                 _args.append(a)
 
                             args = _args
+                        elif isinstance(
+                            self.child, PointerTensor
+                        ) and syft.framework.is_inplace_method(method_name):
+                            # under very specific conditions, ie inplace methods containing a
+                            # single argument which is a Tensor, we allow automatic sending of
+                            # this tensor. This is helpful to facilitate utilizing python code
+                            # of other library for remote execution
+                            # so clearly, this allows: pointer += tensor
+                            if isinstance(args[0], FrameworkTensor) and len(args) == 1:
+                                args[0].send_(self.child.location, no_wrap=True)
 
                         # Replace all torch tensor with their child attribute
                         new_self, new_args, new_kwargs = hook_args.unwrap_args_from_method(

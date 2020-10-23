@@ -27,7 +27,7 @@ def backwards_grad(grad_fn, in_grad=None):
 
 
 class AutogradTensor(AbstractTensor):
-    """ A tensor that tracks operations to build a dynamic graph and backprops
+    """A tensor that tracks operations to build a dynamic graph and backprops
     through the graph to calculate gradients.
     """
 
@@ -90,6 +90,7 @@ class AutogradTensor(AbstractTensor):
         result = self.add(other)
         self.child = result.child
         self.grad_fn = result.grad_fn
+        return self
 
     def __sub__(self, other):
         if isinstance(self, AutogradTensor) and not isinstance(other, AutogradTensor):
@@ -100,6 +101,7 @@ class AutogradTensor(AbstractTensor):
         result = self.sub(other)
         self.child = result.child
         self.grad_fn = result.grad_fn
+        return self
 
     def __mul__(self, other):
         if isinstance(self, AutogradTensor) and not isinstance(other, AutogradTensor):
@@ -142,7 +144,7 @@ class AutogradTensor(AbstractTensor):
         return _self.eq(other)
 
     @overloaded.method
-    def relu(self, self_):
+    def relu(self, self_, **kwargs):
         return self_.relu()
 
     def __getattribute__(self, name):
@@ -194,22 +196,19 @@ class AutogradTensor(AbstractTensor):
         module.neg = neg
 
         def log(self):
-            """Overriding torch's log method.
-            """
+            """Overriding torch's log method."""
             return self.log()
 
         module.log = log
 
         def exp(self):
-            """Overriding torch's exp function.
-            """
+            """Overriding torch's exp function."""
             return self.exp()
 
         module.exp = exp
 
         def sum(self, **kwargs):
-            """Overriding torch's sum function.
-            """
+            """Overriding torch's sum function."""
             return self.sum(**kwargs)
 
         module.sum = sum
@@ -256,7 +255,7 @@ class AutogradTensor(AbstractTensor):
 
                 module.linear = linear
 
-                def relu(tensor):
+                def relu(tensor, **kwargs):
                     return tensor.relu()
 
                 module.relu = relu
@@ -281,27 +280,32 @@ class AutogradTensor(AbstractTensor):
         :return: the response of the function command
         """
 
-        cmd, _, args_, kwargs_ = command
+        cmd_name, _, args_, kwargs_ = command
 
         # Check that the function has not been overwritten
+        cmd = None
         try:
             # Try to get recursively the attributes in cmd = "<attr1>.<attr2>.<attr3>..."
-            cmd = cls.rgetattr(cls, cmd)
-            return cmd(*args_, **kwargs_)
+            cmd = cls.rgetattr(cls, cmd_name)
         except AttributeError:
             pass
 
+        if cmd is not None:
+            return cmd(*args_, **kwargs_)
+
         # Replace all AutogradTensor with their child attribute
-        new_args, new_kwargs, new_type = hook_args.unwrap_args_from_function(cmd, args_, kwargs_)
+        new_args, new_kwargs, new_type = hook_args.unwrap_args_from_function(
+            cmd_name, args_, kwargs_
+        )
 
         # build the new command
-        new_command = (cmd, None, new_args, new_kwargs)
+        new_command = (cmd_name, None, new_args, new_kwargs)
 
         # Send it to the appropriate class and get the response
         response = new_type.handle_func_command(new_command)
 
         # Put back AutogradTensor on the tensors found in the response
-        response = hook_args.hook_response(cmd, response, wrap_type=cls)
+        response = hook_args.hook_response(cmd_name, response, wrap_type=cls)
 
         return response
 

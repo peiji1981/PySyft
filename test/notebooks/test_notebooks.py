@@ -46,6 +46,8 @@ translated_notebooks_diff = list(set(changed_files) & set(translated_notebooks))
 exclusion_list_notebooks = [
     # Part 10 needs either torch.log2 to be implemented or numpy to be hooked
     "Part 10 - Federated Learning with Secure Aggregation.ipynb",
+    # Part 11 bis needs a lot of RAM and runs for > 300s for sure
+    "Part 11 bis - Encrypted inference on ResNet-18.ipynb",
     # Part 13b and c need fixing of the tensorflow serving with PySyft
     "Part 13b - Secure Classification with Syft Keras and TFE - Secure Model Serving.ipynb",
     "Part 13c - Secure Classification with Syft Keras and TFE - Private Prediction Client.ipynb",
@@ -149,7 +151,7 @@ def test_notebooks_advanced(isolated_filesystem, notebook):
     notebook = notebook.replace("examples/tutorials/", "")
     list_name = Path("examples/tutorials/") / notebook
     tested_notebooks.append(str(list_name))
-    res = pm.execute_notebook(notebook, "/dev/null", parameters={"epochs": 1}, timeout=300)
+    res = pm.execute_notebook(notebook, "/dev/null", parameters={"epochs": 1}, timeout=400)
     assert isinstance(res, nbformat.notebooknode.NotebookNode)
 
 
